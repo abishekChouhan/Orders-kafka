@@ -1,0 +1,99 @@
+version: '3'
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.0
+    container_name: zookeeper
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    expose:
+      - "29092"
+    environment:
+      - KAFKA_ZOOKEEPER_CONNECT=zookeeper:2181
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      - KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
+
+  init-kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    depends_on:
+      - kafka
+    entrypoint: [ '/bin/sh', '-c' ]
+    command: |
+      "
+      kafka-topics --bootstrap-server kafka:29092 --list
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic orders --replication-factor 1 --partitions 2
+      kafka-topics --bootstrap-server kafka:29092 --list
+      "
+
+  publisher:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: publisher
+    depends_on:
+      - kafka
+      - init-kafka
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - KAFKA_TOPIC=${KAFKA_TOPIC}
+      - TMP_DIR=${TMP_DIR}
+      - SLEEP_PERIOD=${SLEEP_PERIOD}
+      - OFFSET_RESET=${OFFSET_RESET}
+      - MAIL_TO=${MAIL_TO}
+    volumes:
+      - /tmp/orders-kafka-data:/app/data
+    command: bash -c "sleep 8 && python producer.py"
+
+  consumer_email:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: consumer_email
+    depends_on:
+      - kafka
+      - init-kafka
+      - publisher
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - KAFKA_TOPIC=${KAFKA_TOPIC}
+      - TMP_DIR=${TMP_DIR}
+      - SLEEP_PERIOD=${SLEEP_PERIOD}
+      - OFFSET_RESET=${OFFSET_RESET}
+      - EMAIL_CONSUMER_GROUP=${EMAIL_CONSUMER_GROUP}
+      - DLQ_TOPIC=${DLQ_TOPIC}
+      - MAIL_FROM=${MAIL_FROM}
+      - MAIL_PASSWORD=${MAIL_PASSWORD}
+    volumes:
+      - /tmp/orders-kafka-data:/app/data
+    command: bash -c "sleep 10 && python consumer_email.py"
+
+  consumer_processing:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: consumer_processing
+    depends_on:
+      - kafka
+      - init-kafka
+      - publisher
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - KAFKA_TOPIC=${KAFKA_TOPIC}
+      - TMP_DIR=${TMP_DIR}
+      - SLEEP_PERIOD=${SLEEP_PERIOD}
+      - OFFSET_RESET=${OFFSET_RESET}
+      - PROCESSING_CONSUMER_GROUP=${PROCESSING_CONSUMER_GROUP}
+    volumes:
+      - /tmp/orders-kafka-data:/app/data
+    command: bash -c "sleep 10 && python consumer_order_processing.py"
